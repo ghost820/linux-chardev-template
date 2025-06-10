@@ -31,18 +31,49 @@ static ssize_t chardev_write(struct file *filp, const char __user *buf,
 {
 	struct chardev_data *dev = filp->private_data;
 
-	if (count > CHARDEV_BUFSIZE) {
-		return -EINVAL;
+	mutex_lock(&chardev_mutex);
+
+	if (*f_pos + count > CHARDEV_BUFSIZE) {
+		count = CHARDEV_BUFSIZE - *f_pos;
 	}
 
-	mutex_lock(&chardev_mutex);
-	if (copy_from_user(dev->buffer, buf, count) != 0) {
+	if (!count) {
+		mutex_unlock(&chardev_mutex);
+		return -EFBIG;
+	}
+
+	if (copy_from_user(dev->buffer + *f_pos, buf, count) != 0) {
 		mutex_unlock(&chardev_mutex);
 		return -EFAULT;
 	}
+
+	*f_pos += count;
+
 	mutex_unlock(&chardev_mutex);
 
-	// *f_pos += count;
+	return count;
+}
+
+static ssize_t chardev_read(struct file *filp, char __user *buf,
+	size_t count, loff_t *f_pos)
+{
+	struct chardev_data *dev = filp->private_data;
+
+	mutex_lock(&chardev_mutex);
+
+	if (*f_pos + count > CHARDEV_BUFSIZE) {
+		count = CHARDEV_BUFSIZE - *f_pos;
+	}
+
+	if (copy_to_user(buf, dev->buffer + *f_pos, count) != 0) {
+		mutex_unlock(&chardev_mutex);
+		return -EFAULT;
+	}
+
+	*f_pos += count;
+
+	mutex_unlock(&chardev_mutex);
+
 	return count;
 }
 
@@ -92,6 +123,7 @@ static int chardev_release(struct inode *inode, struct file *filp)
 static const struct file_operations chardev_fileops = {
 	.owner = THIS_MODULE,
 	.write = chardev_write,
+	.read = chardev_read,
 	.open = chardev_open,
 	.release = chardev_release,
 };
@@ -126,7 +158,6 @@ static void __exit chardev_exit(void)
 {
 	device_destroy(chardev_class, chardev_id);
 	cdev_del(&chardev.cdev);
-	class_unregister(chardev_class);
 	class_destroy(chardev_class);
 	unregister_chrdev_region(chardev_id, 1);
 }
