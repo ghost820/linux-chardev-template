@@ -3,9 +3,12 @@
 #include <linux/init.h>
 #include <linux/module.h>
 #include <linux/mutex.h>
+#include <linux/slab.h>
 
 #define DRV_NAME "chardev"
 #define DRV_CLASS_NAME "chardev"
+
+#define CHARDEV_BUFSIZE 128
 
 MODULE_AUTHOR("Michal Miladowski <michal.miladowski@gmail.com>");
 MODULE_DESCRIPTION("Character Device Driver Template");
@@ -13,6 +16,7 @@ MODULE_LICENSE("GPL");
 
 struct chardev_data {
 	struct cdev cdev;
+	u8 *buffer;
 	bool is_open;
 };
 
@@ -21,6 +25,26 @@ static DEFINE_MUTEX(chardev_mutex);
 static dev_t chardev_id;
 static struct class *chardev_class;
 static struct chardev_data chardev;
+
+static ssize_t chardev_write(struct file *filp, const char __user *buf,
+	size_t count, loff_t *f_pos)
+{
+	struct chardev_data *dev = filp->private_data;
+
+	if (count > CHARDEV_BUFSIZE) {
+		return -EINVAL;
+	}
+
+	mutex_lock(&chardev_mutex);
+	if (copy_from_user(dev->buffer, buf, count) != 0) {
+		mutex_unlock(&chardev_mutex);
+		return -EFAULT;
+	}
+	mutex_unlock(&chardev_mutex);
+
+	// *f_pos += count;
+	return count;
+}
 
 static int chardev_open(struct inode *inode, struct file *filp)
 {
@@ -39,6 +63,11 @@ static int chardev_open(struct inode *inode, struct file *filp)
 		mutex_unlock(&chardev_mutex);
 		return -EBUSY;
 	}
+	dev->buffer = kzalloc(CHARDEV_BUFSIZE, GFP_KERNEL);
+	if (!dev->buffer) {
+		mutex_unlock(&chardev_mutex);
+		return -ENOMEM;
+	}
 	dev->is_open = true;
 	filp->private_data = dev;
 	mutex_unlock(&chardev_mutex);
@@ -51,6 +80,8 @@ static int chardev_release(struct inode *inode, struct file *filp)
 	struct chardev_data *dev = filp->private_data;
 
 	mutex_lock(&chardev_mutex);
+	kfree(dev->buffer);
+	dev->buffer = NULL;
 	dev->is_open = false;
 	filp->private_data = NULL;
 	mutex_unlock(&chardev_mutex);
@@ -60,6 +91,7 @@ static int chardev_release(struct inode *inode, struct file *filp)
 
 static const struct file_operations chardev_fileops = {
 	.owner = THIS_MODULE,
+	.write = chardev_write,
 	.open = chardev_open,
 	.release = chardev_release,
 };
