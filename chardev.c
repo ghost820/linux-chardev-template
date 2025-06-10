@@ -46,9 +46,22 @@ static int chardev_open(struct inode *inode, struct file *filp)
 	return 0;
 }
 
+static int chardev_release(struct inode *inode, struct file *filp)
+{
+	struct chardev_data *dev = filp->private_data;
+
+	mutex_lock(&chardev_mutex);
+	dev->is_open = false;
+	filp->private_data = NULL;
+	mutex_unlock(&chardev_mutex);
+
+	return 0;
+}
+
 static const struct file_operations chardev_fileops = {
 	.owner = THIS_MODULE,
 	.open = chardev_open,
+	.release = chardev_release,
 };
 
 static int __init chardev_init(void)
