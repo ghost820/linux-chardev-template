@@ -9,6 +9,8 @@
 #define DRV_NAME "chardev"
 #define DRV_CLASS_NAME "chardev"
 
+#define NUM_OF_DEVS 4
+
 #define CHARDEV_BUFSIZE 16
 
 MODULE_AUTHOR("Michal Miladowski <michal.miladowski@gmail.com>");
@@ -24,7 +26,7 @@ static DEFINE_MUTEX(chardev_mutex);
 
 static dev_t chardev_id;
 static struct class *chardev_class;
-static struct chardev_data chardev;
+static struct chardev_data chardev[NUM_OF_DEVS];
 
 static ssize_t chardev_write(struct file *filp, const char __user *buf,
 	size_t count, loff_t *f_pos)
@@ -114,12 +116,6 @@ static int chardev_open(struct inode *inode, struct file *filp)
 {
 	struct chardev_data *dev;
 
-	if (MAJOR(chardev_id) != imajor(inode) ||
-	    MINOR(chardev_id) != iminor(inode)) {
-		pr_err("%s: device not found\n", DRV_NAME);
-		return -ENODEV;
-	}
-
 	dev = container_of(inode->i_cdev, struct chardev_data, cdev);
 
 	filp->private_data = dev;
@@ -143,10 +139,12 @@ static const struct file_operations chardev_fileops = {
 
 static int __init chardev_init(void)
 {
+	int i;
 	int rc;
+	dev_t dev_id;
 	struct device *dev;
 
-	rc = alloc_chrdev_region(&chardev_id, 0, 1, DRV_NAME);
+	rc = alloc_chrdev_region(&chardev_id, 0, NUM_OF_DEVS, DRV_NAME);
 	if (rc < 0) {
 		pr_err("%s: failed to allocate char dev region\n", DRV_NAME);
 		goto err_chrdev;
@@ -159,49 +157,66 @@ static int __init chardev_init(void)
 		goto err_class_create;
 	}
 
-	cdev_init(&chardev.cdev, &chardev_fileops);
-	chardev.cdev.owner = THIS_MODULE;
-	rc = cdev_add(&chardev.cdev, chardev_id, 1);
-	if (rc < 0) {
-  		pr_err("%s: failed to add cdev\n", DRV_NAME);
-  		goto err_cdev_add;
- 	}
+	for (i = 0; i < NUM_OF_DEVS; i++) {
+		dev_id = MKDEV(MAJOR(chardev_id), MINOR(chardev_id) + i);
+		cdev_init(&chardev[i].cdev, &chardev_fileops);
+		chardev[i].cdev.owner = THIS_MODULE;
+		rc = cdev_add(&chardev[i].cdev, dev_id, 1);
+		if (rc < 0) {
+			pr_err("%s: failed to add cdev\n", DRV_NAME);
+			goto err_cdev_add;
+		}
 
-	dev = device_create(chardev_class, NULL, chardev_id, NULL, DRV_NAME);
-	if (IS_ERR(dev)) {
-		pr_err("%s: failed to create device\n", DRV_NAME);
-		rc = PTR_ERR(dev);
-		goto err_device_create;
+		dev = device_create(chardev_class, NULL, dev_id, NULL,
+							"%s%d", DRV_NAME, i);
+		if (IS_ERR(dev)) {
+			pr_err("%s: failed to create device\n", DRV_NAME);
+			cdev_del(&chardev[i].cdev);
+			rc = PTR_ERR(dev);
+			goto err_device_create;
+		}
+
+		chardev[i].buffer = kzalloc(CHARDEV_BUFSIZE, GFP_KERNEL);
+		if (!chardev[i].buffer) {
+			pr_err("%s: failed to allocate device buffer\n", DRV_NAME);
+			device_destroy(chardev_class, dev_id);
+			cdev_del(&chardev[i].cdev);
+			rc = -ENOMEM;
+			goto err_alloc;
+		}
 	}
-
-	chardev.buffer = kzalloc(CHARDEV_BUFSIZE, GFP_KERNEL);
-	if (!chardev.buffer) {
-		pr_err("%s: failed to allocate device buffer\n", DRV_NAME);
-		rc = -ENOMEM;
-		goto err_alloc;
-  	}
 
 	return 0;
 
 err_alloc:
-	device_destroy(chardev_class, chardev_id);
 err_device_create:
-	cdev_del(&chardev.cdev);
 err_cdev_add:
+	for (i--; i >= 0; i--) {
+		dev_id = MKDEV(MAJOR(chardev_id), MINOR(chardev_id) + i);
+		kfree(chardev[i].buffer);
+		device_destroy(chardev_class, dev_id);
+		cdev_del(&chardev[i].cdev);
+	}
 	class_destroy(chardev_class);
 err_class_create:
-	unregister_chrdev_region(chardev_id, 1);
+	unregister_chrdev_region(chardev_id, NUM_OF_DEVS);
 err_chrdev:
 	return rc;
 }
 
 static void __exit chardev_exit(void)
 {
-	kfree(chardev.buffer);
-	device_destroy(chardev_class, chardev_id);
-	cdev_del(&chardev.cdev);
+	int i;
+	dev_t dev_id;
+
+	for (i = 0; i < NUM_OF_DEVS; i++) {
+		dev_id = MKDEV(MAJOR(chardev_id), MINOR(chardev_id) + i);
+		kfree(chardev[i].buffer);
+		device_destroy(chardev_class, dev_id);
+		cdev_del(&chardev[i].cdev);
+ 	}
 	class_destroy(chardev_class);
-	unregister_chrdev_region(chardev_id, 1);
+	unregister_chrdev_region(chardev_id, NUM_OF_DEVS);
 }
 
 module_init(chardev_init);
