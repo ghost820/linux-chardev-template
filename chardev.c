@@ -20,9 +20,8 @@ MODULE_LICENSE("GPL");
 struct chardev_data {
 	struct cdev cdev;
 	u8 *buffer;
+	struct mutex mutex;
 };
-
-static DEFINE_MUTEX(chardev_mutex);
 
 static dev_t chardev_id;
 static struct class *chardev_class;
@@ -33,25 +32,25 @@ static ssize_t chardev_write(struct file *filp, const char __user *buf,
 {
 	struct chardev_data *dev = filp->private_data;
 
-	mutex_lock(&chardev_mutex);
+	mutex_lock(&dev->mutex);
 
 	if (*f_pos + count > CHARDEV_BUFSIZE) {
 		count = CHARDEV_BUFSIZE - *f_pos;
 	}
 
 	if (!count) {
-		mutex_unlock(&chardev_mutex);
+		mutex_unlock(&dev->mutex);
 		return -EFBIG;
 	}
 
 	if (copy_from_user(dev->buffer + *f_pos, buf, count) != 0) {
-		mutex_unlock(&chardev_mutex);
+		mutex_unlock(&dev->mutex);
 		return -EFAULT;
 	}
 
 	*f_pos += count;
 
-	mutex_unlock(&chardev_mutex);
+	mutex_unlock(&dev->mutex);
 
 	return count;
 }
@@ -61,29 +60,30 @@ static ssize_t chardev_read(struct file *filp, char __user *buf,
 {
 	struct chardev_data *dev = filp->private_data;
 
-	mutex_lock(&chardev_mutex);
+	mutex_lock(&dev->mutex);
 
 	if (*f_pos + count > CHARDEV_BUFSIZE) {
 		count = CHARDEV_BUFSIZE - *f_pos;
 	}
 
 	if (copy_to_user(buf, dev->buffer + *f_pos, count) != 0) {
-		mutex_unlock(&chardev_mutex);
+		mutex_unlock(&dev->mutex);
 		return -EFAULT;
 	}
 
 	*f_pos += count;
 
-	mutex_unlock(&chardev_mutex);
+	mutex_unlock(&dev->mutex);
 
 	return count;
 }
 
 static loff_t chardev_lseek(struct file *filp, loff_t off, int whence)
 {
+	struct chardev_data *dev = filp->private_data;
 	loff_t tmp;
 
-	mutex_lock(&chardev_mutex);
+	mutex_lock(&dev->mutex);
 
 	switch (whence) {
 		case SEEK_SET:
@@ -96,18 +96,18 @@ static loff_t chardev_lseek(struct file *filp, loff_t off, int whence)
 			tmp = CHARDEV_BUFSIZE + off;
 			break;
 		default:
-			mutex_unlock(&chardev_mutex);
+			mutex_unlock(&dev->mutex);
 			return -EINVAL;
 	}
 
 	if (tmp > CHARDEV_BUFSIZE || tmp < 0) {
-		mutex_unlock(&chardev_mutex);
+		mutex_unlock(&dev->mutex);
 		return -EINVAL;
 	}
 
 	filp->f_pos = tmp;
 
-	mutex_unlock(&chardev_mutex);
+	mutex_unlock(&dev->mutex);
 
 	return tmp;
 }
@@ -184,6 +184,8 @@ static int __init chardev_init(void)
 			rc = -ENOMEM;
 			goto err_alloc;
 		}
+
+		mutex_init(&chardev[i].mutex);
 	}
 
 	return 0;
